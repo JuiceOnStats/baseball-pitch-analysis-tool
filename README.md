@@ -41,4 +41,4 @@ python -m pip install pandas pybaseball
 
 Results depend on the selected date range and available Statcast data. Small samples can produce misleading performance statistics.
 
-This project is a work in progress.
+This project is a work in progress and my first ever coding project.
