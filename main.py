@@ -27,16 +27,19 @@ pitcher_data = pitcher_data.dropna(
     subset=["pitch_name"]
 )
 
+
 # Identify batter handedness
 pitcher_data["batter_hand"] = pitcher_data["stand"].map({
     "R": "RHB",
     "L": "LHB"
 })
 
+
 # Sort pitches so we can track pitch sequences
 pitcher_data = pitcher_data.sort_values(
     ["game_pk", "at_bat_number", "pitch_number"]
 ).copy()
+
 
 # Create the count before each pitch
 pitcher_data["count"] = (
@@ -45,11 +48,65 @@ pitcher_data["count"] = (
     + pitcher_data["strikes"].astype(str)
 )
 
-# Identify the previous pitch within each plate appearance
-pitcher_data["previous_pitch"] = (
-    pitcher_data
-    .groupby(["game_pk", "at_bat_number"])["pitch_name"]
-    .shift(1)
+
+# Identify the previous and next pitches within each plate appearance
+plate_appearance = pitcher_data.groupby(
+    ["game_pk", "at_bat_number"]
+)
+
+pitcher_data["previous_pitch"] = plate_appearance["pitch_name"].shift(1)
+pitcher_data["next_pitch"] = plate_appearance["pitch_name"].shift(-1)
+
+
+# Categorize the result of each pitch
+def classify_pitch_result(row):
+    description = str(row["description"]).lower()
+    event = str(row["events"]).lower()
+
+    if description in [
+        "ball",
+        "blocked_ball",
+        "pitchout",
+        "intent_ball",
+        "automatic_ball"
+    ]:
+        return "Ball"
+
+    if description == "called_strike":
+        return "Called Strike"
+
+    if description in [
+        "swinging_strike",
+        "swinging_strike_blocked",
+        "missed_bunt"
+    ]:
+        return "Swinging Strike"
+
+    if description in [
+        "foul",
+        "foul_bunt"
+    ]:
+        return "Foul Ball"
+
+    if description == "foul_tip":
+        return "Foul Tip"
+
+    if description in [
+        "hit_into_play",
+        "hit_into_play_no_out",
+        "hit_into_play_score"
+    ]:
+        return "Ball in Play"
+
+    if event == "hit_by_pitch" or description == "hit_by_pitch":
+        return "Hit Batter"
+
+    return "Other"
+
+
+pitcher_data["pitch_result"] = pitcher_data.apply(
+    classify_pitch_result,
+    axis=1
 )
 
 
@@ -462,3 +519,147 @@ for hand in ["RHB", "LHB"]:
     ]
 
     print(primary_followup.to_string(index=False))
+
+
+# Pitch sequencing by count and previous pitch result
+# The count is from the pitch that was thrown first
+sequencing_by_count_data = pitcher_data[
+    pitcher_data["next_pitch"].notna()
+    & pitcher_data["batter_hand"].notna()
+].copy()
+
+sequence_by_count = (
+    sequencing_by_count_data
+    .groupby(
+        [
+            "batter_hand",
+            "count",
+            "pitch_name",
+            "pitch_result",
+            "next_pitch"
+        ]
+    )
+    .size()
+    .reset_index(name="times_thrown")
+)
+
+sequence_by_count_totals = (
+    sequence_by_count
+    .groupby(
+        [
+            "batter_hand",
+            "count",
+            "pitch_name",
+            "pitch_result"
+        ]
+    )["times_thrown"]
+    .sum()
+    .reset_index(name="total_next_pitches")
+)
+
+sequence_by_count = sequence_by_count.merge(
+    sequence_by_count_totals,
+    on=[
+        "batter_hand",
+        "count",
+        "pitch_name",
+        "pitch_result"
+    ]
+)
+
+sequence_by_count["usage"] = (
+    sequence_by_count["times_thrown"]
+    / sequence_by_count["total_next_pitches"]
+    * 100
+).round(1)
+
+sequence_by_count = sequence_by_count.sort_values(
+    [
+        "batter_hand",
+        "count",
+        "pitch_name",
+        "pitch_result",
+        "usage"
+    ],
+    ascending=[True, True, True, True, False]
+)
+
+
+# Display pitch sequencing by count and result
+for hand in ["RHB", "LHB"]:
+
+    print("\n")
+    print("=" * 90)
+    print("PITCH SEQUENCING BY COUNT AND RESULT VS", hand)
+    print("=" * 90)
+
+    sequence_by_count_display = sequence_by_count[
+        sequence_by_count["batter_hand"] == hand
+    ][
+        [
+            "count",
+            "pitch_name",
+            "pitch_result",
+            "next_pitch",
+            "times_thrown",
+            "usage"
+        ]
+    ].copy()
+
+    sequence_by_count_display = sequence_by_count_display.rename(
+        columns={
+            "pitch_name": "pitch_thrown",
+            "pitch_result": "previous_result"
+        }
+    )
+
+    print(sequence_by_count_display.to_string(index=False))
+
+
+# Most common follow-up pitch by count and previous pitch result
+for hand in ["RHB", "LHB"]:
+
+    print("\n")
+    print("=" * 90)
+    print("MOST COMMON NEXT PITCH BY COUNT AND RESULT VS", hand)
+    print("=" * 90)
+
+    primary_followup_by_count = (
+        sequence_by_count[
+            sequence_by_count["batter_hand"] == hand
+        ]
+        .sort_values(
+            [
+                "count",
+                "pitch_name",
+                "pitch_result",
+                "usage"
+            ],
+            ascending=[True, True, True, False]
+        )
+        .groupby(
+            ["count", "pitch_name", "pitch_result"],
+            sort=False
+        )
+        .first()
+        .reset_index()
+    )
+
+    primary_followup_by_count = primary_followup_by_count[
+        [
+            "count",
+            "pitch_name",
+            "pitch_result",
+            "next_pitch",
+            "times_thrown",
+            "usage"
+        ]
+    ].rename(
+        columns={
+            "pitch_name": "pitch_thrown",
+            "pitch_result": "previous_result",
+            "next_pitch": "most_common_next_pitch"
+        }
+    )
+
+    print(primary_followup_by_count.to_string(index=False))
